@@ -153,7 +153,7 @@ namespace KemonoDownloaderGUI
             checkedListBox1.Size = new Size(120, 94);
             checkedListBox1.TabIndex = 11;
             // 
-            // downloadProgressBar
+            // donnloadProgressBar
             // 
             downloadProgressBar.Location = new Point(688, 313);
             downloadProgressBar.Name = "downloadProgressBar";
