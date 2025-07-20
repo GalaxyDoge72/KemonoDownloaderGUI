@@ -1,20 +1,15 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Collections.Specialized;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
-using System.Numerics;
-using System.Security.AccessControl;
-using System.Security.Policy;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
-using System.Web;
 using System.Windows.Forms;
-using static System.Net.WebRequestMethods;
 using File = System.IO.File;
 
 namespace KemonoDownloaderGUI
@@ -26,13 +21,15 @@ namespace KemonoDownloaderGUI
             {
                 ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", // Images
                 ".mp4", ".mov", ".avi", ".webm", ".mkv", ".flv", // Videos
-                ".mp3", ".wav", ".flac", // Audio
+                ".mp3", ".wav", ".flac", ".m4a", // Audio
                 ".zip", ".rar", ".7z", // Archives
-                ".pdf", ".txt", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx" // Documents
+                ".pdf", ".txt", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", // Documents
+                ".psd"
             };
 
         private List<failedDownload> failedFileDowloads = new List<failedDownload>();
         string outputDir;
+        private KemonoApiFetcher _currentFetcher;
 
         public Form1()
         {
@@ -50,6 +47,7 @@ namespace KemonoDownloaderGUI
                 checkedListBox1.Items.Add(extension, false);
             }
             clearDownloadText();
+            clearSpeedText();
         }
         public void AppendLogBox(string msg)
         {
@@ -59,7 +57,7 @@ namespace KemonoDownloaderGUI
             }
             else
             {
-                logTextBox.AppendText(msg);
+                logTextBox.AppendText(msg + Environment.NewLine);
                 logTextBox.ScrollToCaret();
             }
         }
@@ -69,15 +67,55 @@ namespace KemonoDownloaderGUI
             string invalidRegStr = string.Format(@"[{0}]", invalidChars);
             return Regex.Replace(filename, invalidRegStr, "_");
         }
+        private string AddLongPathPrefix(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                return path;
+            }
+
+            if (path.StartsWith(@"\\?\", StringComparison.OrdinalIgnoreCase))
+            {
+                return path;
+            }
+
+            string pathRoot = Path.GetPathRoot(path);
+            if (!string.IsNullOrEmpty(pathRoot) && pathRoot.StartsWith(@"\\", StringComparison.OrdinalIgnoreCase))
+            {
+                return @"\\?\UNC\" + path.Substring(2);
+            }
+
+            return @"\\?\" + path;
+        }
+
+        private string RemoveLongPathPrefix(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                return path;
+            }
+            if (path.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase))
+            {
+                return @"\\" + path.Substring(8);
+            }
+            if (path.StartsWith(@"\\?\", StringComparison.OrdinalIgnoreCase))
+            {
+                return path.Substring(4);
+            }
+            return path;
+        }
         public string getUniqueFilename(string outputDir, string filename)
         {
             filename = sanitizeFilename(filename);
             string baseName = Path.GetFileNameWithoutExtension(filename);
             string extension = Path.GetExtension(filename);
 
-            string filePath = Path.Combine(outputDir, filename);
+            // Combine path and filename.
+            string rawFilePath = Path.Combine(outputDir, filename);
+            // Apply long path prefix
+            string filePath = AddLongPathPrefix(rawFilePath);
 
-            if (!File.Exists(filePath))
+            if (!File.Exists(filePath)) // Use the prefixed path
             {
                 AppendLogBox($"Using filename: {filename}.");
                 return filename; // Filename is unique so return.
@@ -87,9 +125,10 @@ namespace KemonoDownloaderGUI
             while (true)
             {
                 string newFilename = $"{baseName}_{i}{extension}";
-                string newFilePath = Path.Combine(outputDir, newFilename);
+                string rawNewFilePath = Path.Combine(outputDir, newFilename);
+                string newFilePath = AddLongPathPrefix(rawNewFilePath); // Apply long path prefix
 
-                if (!File.Exists(newFilePath))
+                if (!File.Exists(newFilePath)) // Use the prefixed path
                 {
                     AppendLogBox($"Using filename: {newFilename}");
                     return newFilename;
@@ -130,9 +169,7 @@ namespace KemonoDownloaderGUI
                 }
             }
 
-            // Example for desired extensions (e.g., from a checklist box)
             List<string> desiredExtensions = new List<string>();
-
             foreach (object extension in checkedListBox1.CheckedItems)
             {
                 desiredExtensions.Add(extension.ToString());
@@ -144,23 +181,21 @@ namespace KemonoDownloaderGUI
                 return;
             }
 
-            KemonoApiFetcher fetcher = new KemonoApiFetcher(this, desiredExtensions, postLimit);
-            await fetcher.StartDownloadAsync(service, creatorId, outputDir);
+            skipPostButton.Enabled = true;
+
+            _currentFetcher = new KemonoApiFetcher(this, desiredExtensions, postLimit);
+            await _currentFetcher.StartDownloadAsync(service, creatorId, outputDir);
+            _currentFetcher = null;
+
+            skipPostButton.Enabled = false;
         }
 
-        private void button1_Click(object sender, EventArgs e)
+        private void skipPostButton_Click(object sender, EventArgs e)
         {
-            using (FolderBrowserDialog dialog = new FolderBrowserDialog())
+            if (_currentFetcher != null)
             {
-                dialog.Description = "Select where to save the downloads...";
-                dialog.SelectedPath = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
-                DialogResult result = dialog.ShowDialog();
-
-                if (result == DialogResult.OK)
-                {
-                    outputDir = dialog.SelectedPath;
-                    directoryBox.Text = dialog.SelectedPath;
-                }
+                AppendLogBox("Skip requested. Moving to next post...");
+                _currentFetcher.SkipCurrentPost();
             }
         }
 
@@ -197,7 +232,7 @@ namespace KemonoDownloaderGUI
             }
             else
             {
-                if (percentage >= 0 &&  percentage <= 100)
+                if (percentage >= 0 && percentage <= 100)
                 {
                     downloadProgressBar.Value = percentage;
                 }
@@ -225,6 +260,94 @@ namespace KemonoDownloaderGUI
                 i++;
             }
             return string.Format("{0:n2} {1}", dblSByte, Suffix[i]);
+        }
+
+        private void fileDialogButton_Click(object sender, EventArgs e)
+        {
+            using (FolderBrowserDialog dialog = new FolderBrowserDialog())
+            {
+                dialog.SelectedPath = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+                DialogResult result = dialog.ShowDialog();
+
+                if (result == DialogResult.OK)
+                {
+                    directoryBox.Text = dialog.SelectedPath;
+                }
+            }
+        }
+
+        public void updateSpeedText(double bytesPerSecond)
+        {
+            if (this.InvokeRequired)
+            {
+                this.Invoke(new Action(() => updateSpeedText(bytesPerSecond)));
+            }
+            else
+            {
+                string speedStr = FormatBytes((long)bytesPerSecond) + "/s";
+                speedText.Text = $"Speed: {speedStr}";
+            }
+        }
+
+        public void clearSpeedText()
+        {
+            if (this.InvokeRequired)
+            {
+                this.Invoke(new Action(() => clearSpeedText()));
+            }
+            else
+            {
+                speedText.Text = string.Empty;
+            }
+        }
+
+        public int getTrackbarVal()
+        {
+            if (string.IsNullOrEmpty(filepathLimitBox.Text))
+            {
+                return 5000;
+            }
+            int var = int.Parse(filepathLimitBox.Text);
+            return var;
+        }
+
+    }
+    public static class PathSanitizer
+    {
+        public static string SanitizeFileName(string name)
+        {
+            char[] invalidChars = Path.GetInvalidFileNameChars();
+            string sanitizedName = new string(name.Where(c => !invalidChars.Contains(c)).ToArray());
+            sanitizedName = System.Text.RegularExpressions.Regex.Replace(sanitizedName, @"\s+", " ").Trim();
+
+            sanitizedName = sanitizedName.Trim('.');
+
+            int maxSegmentLength = 25; // A common safe length for path segments
+            if (sanitizedName.Length > maxSegmentLength)
+            {
+                sanitizedName = sanitizedName.Substring(0, maxSegmentLength);
+            }
+
+            return sanitizedName;
+        }
+
+        
+        public static string SanitizeDirectoryName(string name, int maxSegmentLength)
+        {
+            char[] invalidChars = Path.GetInvalidFileNameChars();
+
+            string sanitizedName = new string(name.Where(c => !invalidChars.Contains(c)).ToArray());
+
+            // Further sanitization specific to directory names or general cleanup
+            sanitizedName = System.Text.RegularExpressions.Regex.Replace(sanitizedName, @"\s+", " ").Trim();
+            sanitizedName = sanitizedName.Trim('.');
+
+            if (sanitizedName.Length > maxSegmentLength)
+            {
+                sanitizedName = sanitizedName.Substring(0, maxSegmentLength);
+            }
+
+            return sanitizedName;
         }
     }
     public class KemonoFile
@@ -263,11 +386,11 @@ namespace KemonoDownloaderGUI
 
     public class failedDownload
     {
-        public string URL {  get; set; }
+        public string URL { get; set; }
         public string kemonoPath { get; set; }
         public string fileName { get; set; }
         public string outputDir { get; set; }
-        public string originalErr {  get; set; }
+        public string originalErr { get; set; }
     }
 
     public class DownloadManager
@@ -284,7 +407,7 @@ namespace KemonoDownloaderGUI
             Timeout = TimeSpan.FromSeconds(downloadTimeoutSec)
         };
 
-        public static async Task<bool> downloadFileAsync(string url, string kemonoPath, string filename, string outputDir, Form1 formInstance, bool isRetryPass = false)
+        public static async Task<bool> downloadFileAsync(string url, string kemonoPath, string filename, string outputDir, Form1 formInstance, CancellationToken cancellationToken, bool isRetryPass = false)
         {
             string filePath = Path.Combine(outputDir, filename);
 
@@ -308,8 +431,25 @@ namespace KemonoDownloaderGUI
                 try
                 {
                     Directory.CreateDirectory(outputDir);
+                    // Ensure the directory exists
+                    if (!Directory.Exists(outputDir))
+                    {
+                        // Try to create the directory and wait until it exists
+                        Directory.CreateDirectory(outputDir);
+                        int waitCount = 0;
+                        while (!Directory.Exists(outputDir) && waitCount < 10)
+                        {
+                            await Task.Delay(50); // Wait 50ms
+                            waitCount++;
+                        }
+                        if (!Directory.Exists(outputDir))
+                        {
+                            formInstance.AppendLogBox($"ERROR: Could not create output directory '{outputDir}' for file '{filename}'.");
+                            return false;
+                        }
+                    }
 
-                    using (HttpResponseMessage response = await _httpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead))
+                    using (HttpResponseMessage response = await _httpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancellationToken))
                     {
                         response.EnsureSuccessStatusCode();
 
@@ -331,22 +471,35 @@ namespace KemonoDownloaderGUI
                         {
                             byte[] buffer = new byte[8192];
                             int bytesRead;
-                            while ((bytesRead = await contentStream.ReadAsync(buffer, 0, buffer.Length)) > 0)
+                            var sw = System.Diagnostics.Stopwatch.StartNew();
+                            long lastBytes = 0;
+                            long lastElapsedMs = 0;
+
+                            while ((bytesRead = await contentStream.ReadAsync(buffer, 0, buffer.Length, cancellationToken)) > 0)
                             {
-                                await fileStream.WriteAsync(buffer, 0, bytesRead);
+                                await fileStream.WriteAsync(buffer, 0, bytesRead, cancellationToken);
                                 downloadedSize += bytesRead;
-                                
-                                if (totalSize.HasValue)
-                                {
-                                    formInstance.updateDownloadText(downloadedSize, totalSize.Value);
-                                }
 
                                 if (totalSize.HasValue && totalSize.Value > 0)
                                 {
+                                    formInstance.updateDownloadText(downloadedSize, totalSize.Value);
                                     int percentage = (int)((double)downloadedSize / totalSize.Value * 100);
-                                    formInstance.updateProgressBar(percentage); // Update the progress bar
+                                    formInstance.updateProgressBar(percentage);
+                                }
+
+                                if (sw.ElapsedMilliseconds - lastElapsedMs > 500)
+                                {
+                                    long bytesDelta = downloadedSize - lastBytes;
+                                    long msDelta = sw.ElapsedMilliseconds - lastElapsedMs;
+                                    double speed = msDelta > 0 ? (bytesDelta * 1000.0 / msDelta) : 0;
+                                    formInstance.updateSpeedText(speed);
+                                    lastBytes = downloadedSize;
+                                    lastElapsedMs = sw.ElapsedMilliseconds;
                                 }
                             }
+                            // Final speed update
+                            double avgSpeed = sw.ElapsedMilliseconds > 0 ? (downloadedSize * 1000.0 / sw.ElapsedMilliseconds) : 0;
+                            formInstance.updateSpeedText(avgSpeed);
                         }
 
                         if (totalSize.HasValue && totalSize.Value > 0 && downloadedSize != totalSize.Value)
@@ -357,10 +510,10 @@ namespace KemonoDownloaderGUI
                         formInstance.AppendLogBox($"SUCCESS: Downloaded file: {filename}.");
                         downloadedPaths.Add(kemonoPath);
                         formInstance.clearDownloadText();
+                        formInstance.updateSpeedText(0); // Clear speed after download
                         return true;
                     }
                 }
-
                 catch (HttpRequestException httpEX)
                 {
                     int statusCode = (int?)httpEX.StatusCode ?? 0;
@@ -376,57 +529,27 @@ namespace KemonoDownloaderGUI
                         formInstance.AppendLogBox($"HTTP {statusCode} Error downloading {url} after {maxRetries} retries: {httpEX.Message}");
                         if (!isRetryPass && !failedDownloads.Any(item => item.URL == url))
                         {
-                            failedDownloads.Add(new failedDownload
-                            {
-                                URL = url,
-                                kemonoPath = kemonoPath,
-                                fileName = filename,
-                                outputDir = outputDir,
-                                originalErr = httpEX.ToString()
-                            });
+                            failedDownloads.Add(new failedDownload { URL = url, kemonoPath = kemonoPath, fileName = filename, outputDir = outputDir, originalErr = httpEX.ToString() });
                         }
                         return false;
                     }
                 }
                 catch (OperationCanceledException)
                 {
-                    if (retries < maxRetries)
+                    formInstance.AppendLogBox($"Download of {filename} was cancelled.");
+                    if (File.Exists(filePath))
                     {
-                        retries++;
-                        currentAttemptDelay = TimeSpan.Zero;
-                        formInstance.AppendLogBox($"WARN: Timeout/Cancelled downloading {url}. Retrying ({retries}/{maxRetries}) immediately...)");
-
-                        if (File.Exists(filePath))
+                        try
                         {
-                            try
-                            {
-                                File.Delete(filePath);
-                                formInstance.AppendLogBox($"Cleaned up incomplete file: {filePath}.");
-                            }
-                            catch (IOException ioEX)
-                            {
-                                formInstance.AppendLogBox($"ERR: Could not delete incomplete file {filePath}: {ioEX.Message}");
-                            }
+                            File.Delete(filePath);
+                            formInstance.AppendLogBox($"Cleaned up incomplete file: {filePath}.");
                         }
-                        await Task.Delay(currentAttemptDelay);
-                        continue;
-                    }
-                    else
-                    {
-                        formInstance.AppendLogBox($"Timeout or Cancellation of download {url} after {maxRetries} retries.");
-                        if (!isRetryPass && !failedDownloads.Any(item => item.URL == url))
+                        catch (IOException ioEX)
                         {
-                            failedDownloads.Add(new failedDownload
-                            {
-                                URL = url,
-                                kemonoPath = kemonoPath,
-                                fileName = filename,
-                                outputDir = outputDir,
-                                originalErr = "Timeout or Operation Cancelled"
-                            });
+                            formInstance.AppendLogBox($"ERR: Could not delete incomplete file {filePath}: {ioEX.Message}");
                         }
-                        return false;
                     }
+                    return false;
                 }
                 catch (IncompleteDownloadException incompleteEX)
                 {
@@ -454,14 +577,7 @@ namespace KemonoDownloaderGUI
                     {
                         if (!isRetryPass && !failedDownloads.Any(item => item.URL == url))
                         {
-                            failedDownloads.Add(new failedDownload
-                            {
-                                URL = url,
-                                kemonoPath = kemonoPath,
-                                fileName = filename,
-                                outputDir = outputDir,
-                                originalErr = incompleteEX.Message
-                            });
+                            failedDownloads.Add(new failedDownload { URL = url, kemonoPath = kemonoPath, fileName = filename, outputDir = outputDir, originalErr = incompleteEX.Message });
                         }
                         return false;
                     }
@@ -471,14 +587,7 @@ namespace KemonoDownloaderGUI
                     formInstance.AppendLogBox($"ERR: File system error while saving {filename}: {ioEX.Message}");
                     if (!isRetryPass && !failedDownloads.Any(item => item.URL == url))
                     {
-                        failedDownloads.Add(new failedDownload
-                        {
-                            URL = url,
-                            kemonoPath = kemonoPath,
-                            fileName = filename,
-                            outputDir = outputDir,
-                            originalErr = ioEX.ToString()
-                        });
+                        failedDownloads.Add(new failedDownload { URL = url, kemonoPath = kemonoPath, fileName = filename, outputDir = outputDir, originalErr = ioEX.ToString() });
                     }
                     return false;
                 }
@@ -487,28 +596,14 @@ namespace KemonoDownloaderGUI
                     formInstance.AppendLogBox($"ERR: Error occurred while downloading {filename}: {ex.Message}");
                     if (!isRetryPass && !failedDownloads.Any(item => item.URL == url))
                     {
-                        failedDownloads.Add(new failedDownload
-                        {
-                            URL = url,
-                            kemonoPath = kemonoPath,
-                            fileName = filename,
-                            outputDir = outputDir,
-                            originalErr = ex.ToString()
-                        });
+                        failedDownloads.Add(new failedDownload { URL = url, kemonoPath = kemonoPath, fileName = filename, outputDir = outputDir, originalErr = ex.ToString() });
                     }
                     return false;
                 }
             }
             if (!isRetryPass && !failedDownloads.Any(item => item.URL == url))
             {
-                failedDownloads.Add(new failedDownload
-                {
-                    URL = url,
-                    kemonoPath = kemonoPath,
-                    fileName = filename,
-                    outputDir = outputDir,
-                    originalErr = "Max retries exhausted in DownloadFileAsync"
-                });
+                failedDownloads.Add(new failedDownload { URL = url, kemonoPath = kemonoPath, fileName = filename, outputDir = outputDir, originalErr = "Max retries exhausted in DownloadFileAsync" });
             }
             return false;
         }
@@ -517,9 +612,10 @@ namespace KemonoDownloaderGUI
     public class KemonoApiFetcher
     {
         private readonly HttpClient _httpClient;
-        private readonly Form1 _formInstance; // Reference to your Form1 for logging
-        private readonly List<string> _desiredExtensions; // To filter media types
-        private readonly int _postLimitConfig; // Max number of posts to process
+        private readonly Form1 _formInstance;
+        private readonly List<string> _desiredExtensions;
+        private readonly int _postLimitConfig;
+        private CancellationTokenSource _postSkipCts;
 
         public ConcurrentBag<PageFetchFailure> FailedPageFetches { get; private set; } = new ConcurrentBag<PageFetchFailure>();
 
@@ -531,13 +627,17 @@ namespace KemonoDownloaderGUI
             public int? StatusCode { get; set; }
         }
 
-
         public KemonoApiFetcher(Form1 formInstance, List<string> desiredExtensions, int postLimitConfig)
         {
             _formInstance = formInstance;
             _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(KemonoConstants.PageFetchTimeoutSeconds) };
             _desiredExtensions = desiredExtensions;
             _postLimitConfig = postLimitConfig;
+        }
+
+        public void SkipCurrentPost()
+        {
+            _postSkipCts?.Cancel();
         }
 
         public async Task StartDownloadAsync(string service, string creatorId, string baseOutputDir)
@@ -556,7 +656,6 @@ namespace KemonoDownloaderGUI
             int totalPostsProcessed = 0;
             int totalDownloadedCount = 0;
             bool activePageFetching = true;
-            HashSet<string> downloadedPaths = new HashSet<string>(); // To track already processed kemono paths
 
             while (activePageFetching)
             {
@@ -585,15 +684,13 @@ namespace KemonoDownloaderGUI
                             activePageFetching = false;
                             break;
                         }
-                        response.EnsureSuccessStatusCode(); // Throws for 4xx/5xx responses
+                        response.EnsureSuccessStatusCode();
 
                         string jsonString = await response.Content.ReadAsStringAsync();
-                        // Using System.Text.Json
                         postsOnPage = JsonSerializer.Deserialize<List<KemonoPost>>(jsonString, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-                        // If using Newtonsoft.Json: postsOnPage = JsonConvert.DeserializeObject<List<KemonoPost>>(jsonString);
 
                         currentPageFetchSuccess = true;
-                        break; // Success
+                        break;
                     }
                     catch (HttpRequestException httpEx)
                     {
@@ -602,16 +699,14 @@ namespace KemonoDownloaderGUI
                         _formInstance.AppendLogBox($"WARN: HTTP {statusCode} Error fetching page {pageUrl}. Retrying ({retries}/{KemonoConstants.MaxRetries}) in {KemonoConstants.RetryDelaySeconds}s...");
                         await Task.Delay(TimeSpan.FromSeconds(KemonoConstants.RetryDelaySeconds));
                     }
-                    catch (OperationCanceledException) // Catches Timeout
+                    catch (OperationCanceledException)
                     {
                         retries++;
                         _formInstance.AppendLogBox($"WARN: Timeout fetching page {pageUrl}. Retrying ({retries}/{KemonoConstants.MaxRetries}) immediately...");
-                        // No delay for immediate retry
                     }
-                    catch (JsonException jsonEx) // For System.Text.Json, or JsonSerializationException for Newtonsoft.Json
+                    catch (JsonException jsonEx)
                     {
                         _formInstance.AppendLogBox($"Failed to decode JSON from page {pageUrl}: {jsonEx.Message}");
-                        // Log to failedPageFetches similar to Python
                         FailedPageFetches.Add(new PageFetchFailure { Url = pageUrl, Offset = offset, Error = $"JSONDecodeError: {jsonEx.Message}", StatusCode = null });
                         activePageFetching = false;
                         break;
@@ -619,17 +714,13 @@ namespace KemonoDownloaderGUI
                     catch (Exception ex)
                     {
                         _formInstance.AppendLogBox($"An unexpected error occurred fetching page {pageUrl}: {ex.Message}");
-                        // Log to failedPageFetches similar to Python
                         FailedPageFetches.Add(new PageFetchFailure { Url = pageUrl, Offset = offset, Error = ex.Message, StatusCode = null });
                         activePageFetching = false;
                         break;
                     }
                 }
 
-                if (!activePageFetching)
-                {
-                    break;
-                }
+                if (!activePageFetching) break;
 
                 if (!currentPageFetchSuccess || postsOnPage == null)
                 {
@@ -647,69 +738,82 @@ namespace KemonoDownloaderGUI
 
                 foreach (var post in postsOnPage)
                 {
-                    if (_postLimitConfig > 0 && totalPostsProcessed >= _postLimitConfig)
+                    _postSkipCts = new CancellationTokenSource();
+                    try
                     {
-                        _formInstance.AppendLogBox($"Post limit ({_postLimitConfig}) reached. Not processing further posts on this page.");
-                        activePageFetching = false;
-                        break;
-                    }
-
-                    totalPostsProcessed++;
-                    string postId = post.Id ?? $"N/A_{offset}_{postsOnPage.IndexOf(post)}"; // Similar to Python's N/A_{page_counter}_{post_index}
-                    string postTitle = post.Title ?? "No Title";
-                    string sanitizedTitle = _formInstance.sanitizeFilename(postTitle); // Re-use your sanitizeFilename for folder names
-                    string postFolderName = sanitizedTitle; // Simplified, you can add ID if preferred
-                    string postOutputDir = Path.Combine(baseOutputDir, postFolderName);
-                    Directory.CreateDirectory(postOutputDir);
-
-                    _formInstance.AppendLogBox($"Processing post {totalPostsProcessed}: \"{postTitle}\" (ID: {postId}) -> Saving to '{postOutputDir}'");
-
-                    // --- Main file download logic ---
-                    if (post.File?.Path != null) // Check if 'file' object and 'path' property exist
-                    {
-                        string fullFileUrl = $"https://kemono.su{post.File.Path}";
-                        string fileExt = Path.GetExtension(new Uri(fullFileUrl).LocalPath).ToLower();
-                        string dlFilename = GetFilenameFromUrl(fullFileUrl); // You'll need to implement this
-                        string uniqueDlFilename = _formInstance.getUniqueFilename(postOutputDir, dlFilename);
-
-                        if (!_desiredExtensions.Any() || _desiredExtensions.Contains(fileExt))
+                        if (_postLimitConfig > 0 && totalPostsProcessed >= _postLimitConfig)
                         {
-                            if (await DownloadManager.downloadFileAsync(fullFileUrl, post.File.Path, uniqueDlFilename, postOutputDir, _formInstance))
+                            _formInstance.AppendLogBox($"Post limit ({_postLimitConfig}) reached. Not processing further posts on this page.");
+                            activePageFetching = false;
+                            break;
+                        }
+
+                        totalPostsProcessed++;
+                        string postId = post.Id ?? $"N/A_{offset}_{postsOnPage.IndexOf(post)}";
+                        string postTitle = post.Title ?? "No Title";
+                        int maxSegmentLength = _formInstance.getTrackbarVal();
+                        string sanitizedService = PathSanitizer.SanitizeDirectoryName(service, maxSegmentLength);
+                        string sanitizedCreatorName = PathSanitizer.SanitizeDirectoryName(creatorId, maxSegmentLength);
+                        string sanitizedPostTitle = PathSanitizer.SanitizeDirectoryName(postTitle, maxSegmentLength);
+                        string creatorOutputDir = Path.Combine(baseOutputDir, sanitizedService, sanitizedCreatorName, sanitizedPostTitle);
+                        creatorOutputDir = LimitPathLength(creatorOutputDir);
+                        Directory.CreateDirectory(creatorOutputDir);
+                        _formInstance.AppendLogBox($"Processing post {totalPostsProcessed}: \"{postTitle}\" (ID: {postId}) -> Saving to '{creatorOutputDir}'");
+
+                        if (post.File?.Path != null)
+                        {
+                            string fullFileUrl = $"https://kemono.su{post.File.Path}";
+                            string fileExt = Path.GetExtension(new Uri(fullFileUrl).LocalPath).ToLower();
+                            string dlFilename = GetFilenameFromUrl(fullFileUrl);
+                            string uniqueDlFilename = _formInstance.getUniqueFilename(creatorOutputDir, dlFilename);
+
+                            if (!_desiredExtensions.Any() || _desiredExtensions.Contains(fileExt))
                             {
-                                totalDownloadedCount++;
+                                if (await DownloadManager.downloadFileAsync(fullFileUrl, post.File.Path, uniqueDlFilename, creatorOutputDir, _formInstance, _postSkipCts.Token))
+                                {
+                                    totalDownloadedCount++;
+                                }
+                            }
+                            else
+                            {
+                                _formInstance.AppendLogBox($"Skipping main file '{dlFilename}' (Post ID: {postId}), undesired extension: {fileExt}");
                             }
                         }
-                        else
-                        {
-                            _formInstance.AppendLogBox($"Skipping main file '{dlFilename}' (Post ID: {postId}), undesired extension: {fileExt}");
-                        }
-                    }
 
-                    // --- Attachments download logic ---
-                    if (post.Attachments != null)
-                    {
-                        foreach (var attachment in post.Attachments)
+                        if (post.Attachments != null)
                         {
-                            if (attachment.Path != null)
+                            foreach (var attachment in post.Attachments)
                             {
-                                string fullAttachmentUrl = $"https://kemono.su{attachment.Path}";
-                                string fileExt = Path.GetExtension(new Uri(fullAttachmentUrl).LocalPath).ToLower();
-                                string dlFilename = GetFilenameFromUrl(fullAttachmentUrl);
-                                string uniqueDlFilename = _formInstance.getUniqueFilename(postOutputDir, dlFilename);
-
-                                if (!_desiredExtensions.Any() || _desiredExtensions.Contains(fileExt))
+                                if (attachment.Path != null)
                                 {
-                                    if (await DownloadManager.downloadFileAsync(fullAttachmentUrl, attachment.Path, uniqueDlFilename, postOutputDir, _formInstance))
+                                    string fullAttachmentUrl = $"https://kemono.su{attachment.Path}";
+                                    string fileExt = Path.GetExtension(new Uri(fullAttachmentUrl).LocalPath).ToLower();
+                                    string dlFilename = GetFilenameFromUrl(fullAttachmentUrl);
+                                    string uniqueDlFilename = _formInstance.getUniqueFilename(creatorOutputDir, dlFilename);
+
+                                    if (!_desiredExtensions.Any() || _desiredExtensions.Contains(fileExt))
                                     {
-                                        totalDownloadedCount++;
+                                        if (await DownloadManager.downloadFileAsync(fullAttachmentUrl, attachment.Path, uniqueDlFilename, creatorOutputDir, _formInstance, _postSkipCts.Token))
+                                        {
+                                            totalDownloadedCount++;
+                                        }
+                                    }
+                                    else
+                                    {
+                                        _formInstance.AppendLogBox($"Skipping attachment '{dlFilename}' (Post ID: {postId}), undesired extension: {fileExt}");
                                     }
                                 }
-                                else
-                                {
-                                    _formInstance.AppendLogBox($"Skipping attachment '{dlFilename}' (Post ID: {postId}), undesired extension: {fileExt}");
-                                }
                             }
                         }
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        continue;
+                    }
+                    finally
+                    {
+                        _postSkipCts.Dispose();
+                        _postSkipCts = null;
                     }
 
                     if (!activePageFetching)
@@ -719,12 +823,9 @@ namespace KemonoDownloaderGUI
                 }
 
                 offset += KemonoConstants.PageLimit;
-                await Task.Delay(TimeSpan.FromSeconds(1)); // Small delay between pages
+                await Task.Delay(TimeSpan.FromSeconds(0.25));
             }
 
-            // --- Retry persistently failed page fetches ---
-            // This is complex and might require re-calling parts of StartDownloadAsync for a specific page.
-            // For simplicity in this conceptual example, we'll just report them.
             if (FailedPageFetches.Any())
             {
                 _formInstance.AppendLogBox($"\n--- {FailedPageFetches.Count} pages failed to fetch after initial attempts. ---");
@@ -738,18 +839,15 @@ namespace KemonoDownloaderGUI
                 _formInstance.AppendLogBox("\nAll pages successfully fetched or no failures occurred.");
             }
 
-
-            // --- Retry persistently failed file downloads ---
             if (DownloadManager.failedDownloads.Any())
             {
                 _formInstance.AppendLogBox($"\n--- Retrying {DownloadManager.failedDownloads.Count} persistently failed file downloads ---");
                 var filesStillFailingRetryPass = new ConcurrentBag<failedDownload>();
-                foreach (var item in DownloadManager.failedDownloads.ToList()) // Iterate over a copy
+                foreach (var item in DownloadManager.failedDownloads.ToList())
                 {
                     _formInstance.AppendLogBox($"Retrying file: {item.fileName} from {item.URL}");
                     _formInstance.AppendLogBox($"Original error: {item.originalErr}");
 
-                    // Clear the file if it exists before retrying, as in Python
                     string filePath = Path.Combine(item.outputDir, item.fileName);
                     if (File.Exists(filePath))
                     {
@@ -758,16 +856,15 @@ namespace KemonoDownloaderGUI
                     }
 
                     string uniqueRetryFilename = _formInstance.getUniqueFilename(item.outputDir, item.fileName);
-                    if (await DownloadManager.downloadFileAsync(item.URL, item.kemonoPath, uniqueRetryFilename, item.outputDir, _formInstance, isRetryPass: true))
+                    if (await DownloadManager.downloadFileAsync(item.URL, item.kemonoPath, uniqueRetryFilename, item.outputDir, _formInstance, CancellationToken.None, isRetryPass: true))
                     {
                         totalDownloadedCount++;
                     }
                     else
                     {
-                        filesStillFailingRetryPass.Add(item); // Add back to list if still fails
+                        filesStillFailingRetryPass.Add(item);
                     }
                 }
-                // Update the global failedDownloads list (you might want to clear and re-add or create a new instance)
                 DownloadManager.failedDownloads = filesStillFailingRetryPass;
 
                 if (DownloadManager.failedDownloads.Any())
@@ -793,18 +890,70 @@ namespace KemonoDownloaderGUI
             {
                 _formInstance.AppendLogBox($"Number of pages that could NOT be fetched (or were 404/unretryable): {FailedPageFetches.Count}");
             }
+
+            int emptyDirCount = DeleteEmptyDirectories(baseOutputDir);
+            if (emptyDirCount > 0)
+            {
+                _formInstance.AppendLogBox($"\nDeleted {emptyDirCount} empty directories in '{baseOutputDir}'.");
+            }
+            else
+            {
+                _formInstance.AppendLogBox("\nNo empty directories found to delete.");
+            }
         }
 
-        // Helper function to extract filename from URL, similar to Python's get_filename_from_url
+        private int DeleteEmptyDirectories(string rootDir)
+        {
+            int deletedCount = 0;
+            try
+            {
+                foreach (var dir in Directory.GetDirectories(rootDir, "*", SearchOption.AllDirectories)
+                                         .OrderByDescending(d => d.Length))
+                {
+                    if (IsDirectoryEmpty(dir))
+                    {
+                        try
+                        {
+                            Directory.Delete(dir, false);
+                            deletedCount++;
+                        }
+                        catch (Exception ex)
+                        {
+                            _formInstance.AppendLogBox($"Failed to delete empty directory '{dir}': {ex.Message}");
+                        }
+                    }
+                }
+                if (IsDirectoryEmpty(rootDir))
+                {
+                    try
+                    {
+                        Directory.Delete(rootDir, false);
+                        deletedCount++;
+                    }
+                    catch (Exception ex)
+                    {
+                        _formInstance.AppendLogBox($"Failed to delete empty root directory '{rootDir}': {ex.Message}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _formInstance.AppendLogBox($"Error during empty directory cleanup: {ex.Message}");
+            }
+            return deletedCount;
+        }
+
+        private bool IsDirectoryEmpty(string path)
+        {
+            return !Directory.EnumerateFileSystemEntries(path).Any();
+        }
+
         private string GetFilenameFromUrl(string url)
         {
-            // This is a simplified version. The Python script has more robust logic for query params.
-            // You can port that regex logic more directly if needed.
             Uri uri = new Uri(url);
             string filename = Path.GetFileName(uri.LocalPath);
             if (string.IsNullOrEmpty(filename) || filename == ".")
             {
-                // Attempt to get from query string, similar to Python's re.search(r'filename=([^&]+)', query)
                 var queryParams = System.Web.HttpUtility.ParseQueryString(uri.Query);
                 if (!string.IsNullOrEmpty(queryParams["filename"]))
                 {
@@ -814,15 +963,34 @@ namespace KemonoDownloaderGUI
             }
             return filename;
         }
+
+        // Add this helper to KemonoApiFetcher (or a shared utility class)
+        private string LimitPathLength(string path, int maxLength = 260)
+        {
+            if (path.Length <= maxLength)
+                return path;
+
+            // Try to preserve the filename and extension
+            string directory = Path.GetDirectoryName(path);
+            string filename = Path.GetFileName(path);
+            int allowedDirLength = maxLength - filename.Length - 1; // 1 for separator
+
+            if (allowedDirLength < 1)
+                throw new PathTooLongException("Cannot construct a valid path under the limit.");
+
+            if (directory.Length > allowedDirLength)
+                directory = directory.Substring(0, allowedDirLength);
+
+            return Path.Combine(directory, filename);
+        }
     }
 
-    
     public static class KemonoConstants
     {
-        public const int PageFetchTimeoutSeconds = 60; // Adjust as needed
-        public const int MaxRetries = 5; // Adjust as needed
-        public const int RetryDelaySeconds = 3; // Adjust as needed
-        public const int PageLimit = 50; // Adjust as needed
+        public const int PageFetchTimeoutSeconds = 60;
+        public const int MaxRetries = 5;
+        public const int RetryDelaySeconds = 3;
+        public const int PageLimit = 50;
         public const string BaseApiUrl = "https://kemono.su/api/v1/";
     }
 }

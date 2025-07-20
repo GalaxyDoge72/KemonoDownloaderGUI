@@ -45,6 +45,10 @@ namespace KemonoDownloaderGUI
             downloadProgressBar = new ProgressBar();
             downloadProgressText = new Label();
             downloadedText = new Label();
+            skipPostButton = new Button();
+            speedText = new Label();
+            filepathLimitText = new Label();
+            filepathLimitBox = new TextBox();
             SuspendLayout();
             // 
             // providerText
@@ -94,7 +98,7 @@ namespace KemonoDownloaderGUI
             // 
             postLimitText.AutoSize = true;
             postLimitText.Font = new Font("Segoe UI", 12F, FontStyle.Regular, GraphicsUnit.Point, 0);
-            postLimitText.Location = new Point(216, 35);
+            postLimitText.Location = new Point(412, 9);
             postLimitText.Name = "postLimitText";
             postLimitText.Size = new Size(81, 21);
             postLimitText.TabIndex = 5;
@@ -102,7 +106,7 @@ namespace KemonoDownloaderGUI
             // 
             // postLimitBox
             // 
-            postLimitBox.Location = new Point(306, 35);
+            postLimitBox.Location = new Point(499, 9);
             postLimitBox.Name = "postLimitBox";
             postLimitBox.Size = new Size(100, 23);
             postLimitBox.TabIndex = 6;
@@ -122,7 +126,7 @@ namespace KemonoDownloaderGUI
             // 
             directoryLabel.AutoSize = true;
             directoryLabel.Font = new Font("Segoe UI", 12F, FontStyle.Regular, GraphicsUnit.Point, 0);
-            directoryLabel.Location = new Point(216, 60);
+            directoryLabel.Location = new Point(216, 35);
             directoryLabel.Name = "directoryLabel";
             directoryLabel.Size = new Size(77, 21);
             directoryLabel.TabIndex = 8;
@@ -130,20 +134,20 @@ namespace KemonoDownloaderGUI
             // 
             // directoryBox
             // 
-            directoryBox.Location = new Point(306, 62);
+            directoryBox.Location = new Point(299, 35);
             directoryBox.Name = "directoryBox";
             directoryBox.Size = new Size(100, 23);
             directoryBox.TabIndex = 9;
             // 
             // fileDialogButton
             // 
-            fileDialogButton.Location = new Point(412, 62);
+            fileDialogButton.Location = new Point(405, 33);
             fileDialogButton.Name = "fileDialogButton";
             fileDialogButton.Size = new Size(75, 23);
             fileDialogButton.TabIndex = 10;
             fileDialogButton.Text = "Browse...";
             fileDialogButton.UseVisualStyleBackColor = true;
-            fileDialogButton.Click += button1_Click;
+            fileDialogButton.Click += fileDialogButton_Click;
             // 
             // checkedListBox1
             // 
@@ -153,7 +157,7 @@ namespace KemonoDownloaderGUI
             checkedListBox1.Size = new Size(120, 94);
             checkedListBox1.TabIndex = 11;
             // 
-            // donnloadProgressBar
+            // downloadProgressBar
             // 
             downloadProgressBar.Location = new Point(688, 313);
             downloadProgressBar.Name = "downloadProgressBar";
@@ -180,11 +184,53 @@ namespace KemonoDownloaderGUI
             downloadedText.TabIndex = 14;
             downloadedText.Text = "Downloaded";
             // 
+            // skipPostButton
+            // 
+            skipPostButton.Font = new Font("Segoe UI", 12F, FontStyle.Regular, GraphicsUnit.Point, 0);
+            skipPostButton.Location = new Point(665, 62);
+            skipPostButton.Name = "skipPostButton";
+            skipPostButton.Size = new Size(123, 44);
+            skipPostButton.TabIndex = 15;
+            skipPostButton.Text = "Skip Post";
+            skipPostButton.UseVisualStyleBackColor = true;
+            skipPostButton.Click += skipPostButton_Click;
+            // 
+            // speedText
+            // 
+            speedText.AutoSize = true;
+            speedText.Font = new Font("Segoe UI", 12F, FontStyle.Regular, GraphicsUnit.Point, 0);
+            speedText.Location = new Point(12, 292);
+            speedText.Name = "speedText";
+            speedText.Size = new Size(53, 21);
+            speedText.TabIndex = 16;
+            speedText.Text = "Speed";
+            // 
+            // filepathLimitText
+            // 
+            filepathLimitText.AutoSize = true;
+            filepathLimitText.Font = new Font("Segoe UI", 12F, FontStyle.Regular, GraphicsUnit.Point, 0);
+            filepathLimitText.Location = new Point(221, 62);
+            filepathLimitText.Name = "filepathLimitText";
+            filepathLimitText.Size = new Size(178, 21);
+            filepathLimitText.TabIndex = 18;
+            filepathLimitText.Text = "Filepath Character Limit:";
+            // 
+            // filepathLimitBox
+            // 
+            filepathLimitBox.Location = new Point(405, 64);
+            filepathLimitBox.Name = "filepathLimitBox";
+            filepathLimitBox.Size = new Size(100, 23);
+            filepathLimitBox.TabIndex = 19;
+            // 
             // Form1
             // 
             AutoScaleDimensions = new SizeF(7F, 15F);
             AutoScaleMode = AutoScaleMode.Font;
             ClientSize = new Size(800, 450);
+            Controls.Add(filepathLimitBox);
+            Controls.Add(filepathLimitText);
+            Controls.Add(speedText);
+            Controls.Add(skipPostButton);
             Controls.Add(downloadedText);
             Controls.Add(downloadProgressText);
             Controls.Add(downloadProgressBar);
@@ -225,5 +271,9 @@ namespace KemonoDownloaderGUI
         private ProgressBar downloadProgressBar;
         private Label downloadProgressText;
         private Label downloadedText;
+        private Button skipPostButton;
+        private Label speedText;
+        private Label filepathLimitText;
+        private TextBox filepathLimitBox;
     }
 }
